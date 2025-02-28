@@ -4,7 +4,7 @@ import pickle
 from copy import deepcopy
 from typing import Any, Callable, Dict, List
 
-import MatterSim
+# import MatterSim
 import numpy as np
 from gym import Space, spaces
 from habitat.config import Config
@@ -286,18 +286,18 @@ class VLNCandidateSensor(Sensor):
         self._mp3d_sim = self._init_mp3d_sim()
         super().__init__(config=config)
 
-    def _init_mp3d_sim(self):
-        mp3d_sim = MatterSim.Simulator()
-        mp3d_sim.setRenderingEnabled(False)
-        mp3d_sim.setDepthEnabled(False)
-        mp3d_sim.setPreloadingEnabled(False)
-        mp3d_sim.setBatchSize(1)
-        mp3d_sim.setCacheSize(1)
-        mp3d_sim.setDiscretizedViewingAngles(True)
-        mp3d_sim.setCameraResolution(640, 480)
-        mp3d_sim.setCameraVFOV(math.radians(60))
-        mp3d_sim.initialize()
-        return mp3d_sim
+    # def _init_mp3d_sim(self):
+    #     mp3d_sim = MatterSim.Simulator()
+    #     mp3d_sim.setRenderingEnabled(False)
+    #     mp3d_sim.setDepthEnabled(False)
+    #     mp3d_sim.setPreloadingEnabled(False)
+    #     mp3d_sim.setBatchSize(1)
+    #     mp3d_sim.setCacheSize(1)
+    #     mp3d_sim.setDiscretizedViewingAngles(True)
+    #     mp3d_sim.setCameraResolution(640, 480)
+    #     mp3d_sim.setCameraVFOV(math.radians(60))
+    #     mp3d_sim.initialize()
+    #     return mp3d_sim
 
     def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
         return self.cls_uuid

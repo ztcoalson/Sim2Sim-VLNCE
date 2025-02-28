@@ -10,6 +10,7 @@ from habitat import (
     Env,
     RLEnv,
     VectorEnv,
+    ThreadedVectorEnv,
     logger,
     make_dataset,
 )
@@ -115,6 +116,7 @@ def construct_envs(
             proc_config.freeze()
             configs.append(proc_config)
 
+    # change to ThreadedVectorEnv if encountering threading/mp errors
     envs = habitat.VectorEnv(
         make_env_fn=make_env_fn,
         env_fn_args=tuple(zip(configs, env_classes)),

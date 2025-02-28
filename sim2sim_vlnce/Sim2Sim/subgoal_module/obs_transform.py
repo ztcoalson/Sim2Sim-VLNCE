@@ -18,7 +18,136 @@ from sim2sim_vlnce.Sim2Sim.subgoal_module.nonmaximal_suppression import nms
 from sim2sim_vlnce.Sim2Sim.subgoal_module.unet_model import UNet
 from sim2sim_vlnce.Sim2Sim.vis import subgoal_candidates_to_radial_map
 
+from .resnet152_places365 import ResNet152Places365
 
+
+# @BaselineRegistry.register_obs_transformer()
+# class ResNetAllEncoder(ObservationTransformer):
+#     """Encodes all RGB frames into a 2048-dimensional vector using a
+#     pretrained ResNet. Assumes the "rgb" observation is a stack of RGB images.
+#     The model is in Caffe to match exactly the encoder used in R2R VLN.
+#     """
+
+#     OBS_UUID: str = "rgb_features"
+#     FEATURE_SIZE: int = 2048
+
+#     def __init__(
+#         self,
+#         prototxt_f: str,
+#         weights_f: str,
+#         remove_rgb: bool,
+#         max_batch_size: int,
+#         gpu_id: int,
+#     ) -> None:
+#         """Args:
+#         prototxt_f (str): file path of the Caffe network definition file
+#         weights_f (str): file path of the weights for the above network
+#         """
+#         super(ResNetAllEncoder, self).__init__()
+#         if torch.cuda.is_available():
+#             self.device = torch.device("cuda", gpu_id)
+#             caffe.set_device(gpu_id)
+#             caffe.set_mode_gpu()
+#         else:
+#             self.device = torch.device("cpu")
+#             caffe.set_mode_cpu()
+
+#         self.remove_rgb = remove_rgb
+#         self.max_batch_size = max_batch_size
+#         self.net = caffe.Net(prototxt_f, weights_f, caffe.TEST)
+
+#         self.bgr_mean = torch.tensor([103.1, 115.9, 123.2]).to(
+#             device=self.device
+#         )
+
+#     def transform_observation_space(
+#         self,
+#         observation_space: Space,
+#     ) -> Space:
+#         spaces_dict: Dict[str, Space] = observation_space.spaces
+#         num_frames = spaces_dict["rgb"].shape[0]
+#         if self.remove_rgb:
+#             del spaces_dict["rgb"]
+
+#         spaces_dict[self.OBS_UUID] = spaces.Box(
+#             low=np.finfo(np.float32).min,
+#             high=np.finfo(np.float32).max,
+#             shape=(num_frames, self.FEATURE_SIZE),
+#             dtype=np.float32,
+#         )
+#         return spaces.Dict(spaces_dict)
+
+#     def _transform_obs_batch(self, rgb):
+#         """Prepares an RGB observation for input to the Caffe ResNet."""
+#         x = rgb.to(dtype=torch.float32)
+#         x = x[:, :, :, [2, 1, 0]]  # RGB to BGR color channels
+#         x -= self.bgr_mean
+#         x = x.permute(0, 3, 1, 2)
+#         return x.cpu().numpy()  # Caffe loads from CPU unfortunately
+
+#     def encode(self, frames: Tensor) -> Tensor:
+#         """Runs a forward pass on the Caffe ResNet and extracts 2048-dim
+#         features. Uses a maximum batch size to avoid OOM.
+
+#         Args:
+#             frames (Tensor): [num_frames, width, height, channels]
+
+#         Returns:
+#             frame_features (Tensor): [num_frames, 2048]
+#         """
+#         frames_np = self._transform_obs_batch(frames)
+#         num_frames = frames_np.shape[0]
+#         num_passes = int(np.ceil(num_frames / self.max_batch_size))
+
+#         encoded = np.empty((num_frames, self.FEATURE_SIZE), dtype=np.float32)
+
+#         high_idx = 0
+#         for i in range(num_passes):
+#             low_idx = high_idx
+#             high_idx = min(num_frames, (i + 1) * self.max_batch_size)
+
+#             input_frames = frames_np[low_idx:high_idx]
+#             self.net.blobs["data"].reshape(*input_frames.shape)
+#             self.net.blobs["data"].data[:, :, :, :] = input_frames
+#             self.net.forward()
+#             encoded[low_idx:high_idx] = self.net.blobs["pool5"].data[
+#                 :, :, 0, 0
+#             ]
+        
+#         print(torch.from_numpy(encoded))
+#         exit()
+
+#         return torch.from_numpy(encoded).to(self.device)
+
+#     @torch.no_grad()
+#     def forward(self, observations: Observations) -> Observations:
+#         batch_size, num_frames, h, w, channels = observations["rgb"].shape
+
+#         in_shape = (batch_size * num_frames, h, w, channels)
+#         out_shape = (batch_size, num_frames, self.FEATURE_SIZE)
+
+#         frame_features = self.encode(observations["rgb"].reshape(in_shape))
+#         observations[self.OBS_UUID] = frame_features.reshape(out_shape)
+
+#         if self.remove_rgb:
+#             del observations["rgb"]
+
+#         return observations
+
+#     @classmethod
+#     def from_config(cls, config: Config):
+#         cfg = config.RL.POLICY.OBS_TRANSFORMS.RESNET_CANDIDATE_ENCODER
+#         gpu_id = config.TORCH_GPU_ID
+#         if cfg.gpu_id >= 0:
+#             gpu_id = cfg.gpu_id
+#         return cls(
+#             cfg.protoxt_file,
+#             cfg.weights_file,
+#             cfg.remove_rgb,
+#             cfg.max_batch_size,
+#             gpu_id,
+#         )
+    
 @BaselineRegistry.register_obs_transformer()
 class ResNetAllEncoder(ObservationTransformer):
     """Encodes all RGB frames into a 2048-dimensional vector using a
@@ -44,15 +173,13 @@ class ResNetAllEncoder(ObservationTransformer):
         super(ResNetAllEncoder, self).__init__()
         if torch.cuda.is_available():
             self.device = torch.device("cuda", gpu_id)
-            caffe.set_device(gpu_id)
-            caffe.set_mode_gpu()
         else:
             self.device = torch.device("cpu")
-            caffe.set_mode_cpu()
 
         self.remove_rgb = remove_rgb
         self.max_batch_size = max_batch_size
-        self.net = caffe.Net(prototxt_f, weights_f, caffe.TEST)
+        self.net = ResNet152Places365('data/pytorch_models/resnet152-places365.npy').to(self.device)
+        self.net.eval()
 
         self.bgr_mean = torch.tensor([103.1, 115.9, 123.2]).to(
             device=self.device
@@ -81,7 +208,7 @@ class ResNetAllEncoder(ObservationTransformer):
         x = x[:, :, :, [2, 1, 0]]  # RGB to BGR color channels
         x -= self.bgr_mean
         x = x.permute(0, 3, 1, 2)
-        return x.cpu().numpy()  # Caffe loads from CPU unfortunately
+        return x
 
     def encode(self, frames: Tensor) -> Tensor:
         """Runs a forward pass on the Caffe ResNet and extracts 2048-dim
@@ -97,22 +224,19 @@ class ResNetAllEncoder(ObservationTransformer):
         num_frames = frames_np.shape[0]
         num_passes = int(np.ceil(num_frames / self.max_batch_size))
 
-        encoded = np.empty((num_frames, self.FEATURE_SIZE), dtype=np.float32)
+        encoded = torch.zeros((num_frames, self.FEATURE_SIZE), dtype=torch.float32).to(self.device)
 
         high_idx = 0
         for i in range(num_passes):
             low_idx = high_idx
             high_idx = min(num_frames, (i + 1) * self.max_batch_size)
 
-            input_frames = frames_np[low_idx:high_idx]
-            self.net.blobs["data"].reshape(*input_frames.shape)
-            self.net.blobs["data"].data[:, :, :, :] = input_frames
-            self.net.forward()
-            encoded[low_idx:high_idx] = self.net.blobs["pool5"].data[
-                :, :, 0, 0
-            ]
+            input_frames = frames_np[low_idx:high_idx].to(self.device)
 
-        return torch.from_numpy(encoded).to(self.device)
+            with torch.no_grad():
+                encoded[low_idx:high_idx] = self.net(input_frames).data[:, :, 0, 0]
+
+        return encoded
 
     @torch.no_grad()
     def forward(self, observations: Observations) -> Observations:

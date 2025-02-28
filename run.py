@@ -4,7 +4,7 @@ import argparse
 import os
 import random
 
-import MatterSim  # noqa: F401
+# import MatterSim  # noqa: F401
 import numpy as np
 import torch
 from habitat import logger

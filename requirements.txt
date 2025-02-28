@@ -16,4 +16,4 @@ tqdm>=4.0.0
 tensorflow==1.13.1
 tb-nightly
 yacs>=0.1.5
-Opencv-python>=3.3.0
+opencv-python==3.4.0.12

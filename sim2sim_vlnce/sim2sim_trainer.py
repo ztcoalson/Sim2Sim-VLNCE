@@ -121,9 +121,8 @@ class Vln2ceEvaluator(BaseTrainer):
             env = get_env_class(self.config.ENV_NAME)(config=config)
             observation_space = env.observation_space
             action_space = env.action_space
-
-        self.obs_transforms = get_active_obs_transforms(self.config)
-        observation_space = apply_obs_transforms_obs_space(
+        self.obs_transforms = get_active_obs_transforms(self.config)    # ZC: this line loads the ResNet-152 encoder
+        observation_space = apply_obs_transforms_obs_space(             # ZC: for efficientVLN, removed model-related transforms
             observation_space, self.obs_transforms
         )
         return observation_space, action_space
