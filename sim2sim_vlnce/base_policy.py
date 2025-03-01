@@ -4,6 +4,7 @@ from typing import Any, Tuple
 import torch
 from habitat_baselines.rl.ppo.policy import Policy
 from torch import Size, Tensor
+from thop import profile
 
 from sim2sim_vlnce.Sim2Sim.vln_action_mapping import (
     create_candidate_features,
@@ -58,6 +59,37 @@ class VLNPolicy(Policy, metaclass=abc.ABCMeta):
         """
         return self.net.vln_bert("language", tokens, lang_mask=mask)
 
+    def encode_instruction_efficient(self, tokens, mask, episode_ids, gflops_tracker) -> Tuple[Tensor, Tensor]:
+        """Generates the first hidden state vector h_t and encodes each
+        instruction token. Call once for episode initialization. Also
+        tracks the GFLOPs for each episode.
+
+        Returns:
+            h_t (Tensor): [B x hidden_size]
+            instruction_features (Tensor): [B x max_len x hidden_size]
+        """
+        h_t, instruction_features = None, None
+        for i in range(len(episode_ids)):
+            _tokens = tokens[i].unsqueeze(0)
+            _mask = mask[i].unsqueeze(0)
+            
+            (_h_t, _instruction_features), flops, _ = profile(
+                self.net.vln_bert, 
+                inputs=("language", _tokens, None, None, _mask, None, None, None),
+                verbose=False
+            ) # no keyword arguments for thop :(
+
+            if h_t is None:
+                h_t = torch.zeros((tokens.size(0), *_h_t[0].shape)).to(_h_t.device)
+                instruction_features = torch.zeros((tokens.size(0), *_instruction_features[0].shape)).to(_instruction_features.device)
+
+            h_t[i] = _h_t[0].detach()
+            instruction_features[i] = _instruction_features[0].detach()
+
+            gflops_tracker[episode_ids[i]]["instruction_encoder"] += flops / 1e9
+
+        return (h_t, instruction_features)
+
     def act(
         self,
         observations,
@@ -83,6 +115,62 @@ class VLNPolicy(Policy, metaclass=abc.ABCMeta):
             cand_feats=vis_features,
             action_feats=observations["mp3d_action_angle_feature"],
         )
+
+        # Mask candidate logits that have no associated action
+        action_logit.masked_fill(vis_mask, -float("inf"))
+        distribution = CustomFixedCategorical(logits=action_logit)
+
+        if deterministic:
+            action_idx = distribution.mode()
+        else:
+            action_idx = distribution.sample()
+
+        return h_t, idx_to_action(action_idx, coordinates)
+
+    def act_efficient(
+        self,
+        observations,
+        h_t,
+        instruction_features,
+        instruction_mask,
+        deterministic=False,
+        epsiode_ids=None,
+        gflops_tracker=None,
+    ):
+        instruction_features = torch.cat(
+            (h_t.unsqueeze(1), instruction_features[:, 1:, :]), dim=1
+        )
+        (
+            vis_features,
+            coordinates,
+            vis_mask,
+        ) = create_candidate_features(observations)
+
+        attention_mask = torch.cat((instruction_mask, vis_mask), dim=1)
+        
+        h_t, action_logit = None, None
+        for i in range(len(epsiode_ids)):
+            _instruction_features = instruction_features[i].unsqueeze(0)
+            _attention_mask = attention_mask[i].unsqueeze(0)
+            _lang_mask = instruction_mask[i].unsqueeze(0)
+            _vis_mask = vis_mask[i].unsqueeze(0)
+            _cand_feats = vis_features[i].unsqueeze(0)
+            _action_feats = observations["mp3d_action_angle_feature"][i].unsqueeze(0)
+
+            (_h_t, _action_logit), flops, _ = profile(
+                self.net, 
+                inputs=(_instruction_features, _attention_mask, _lang_mask, _vis_mask, _cand_feats, _action_feats),
+                verbose=False
+            )
+            
+            if h_t is None:
+                h_t = torch.zeros((len(epsiode_ids), *_h_t[0].shape)).to(_h_t.device)
+                action_logit = torch.zeros((len(epsiode_ids), *_action_logit[0].shape)).to(_action_logit.device)
+            
+            h_t[i] = _h_t[0].detach()
+            action_logit[i] = _action_logit[0].detach()
+
+            gflops_tracker[epsiode_ids[i]]["policy"] += flops / 1e9
 
         # Mask candidate logits that have no associated action
         action_logit.masked_fill(vis_mask, -float("inf"))

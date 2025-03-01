@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+import logging
 import warnings
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
@@ -48,7 +49,7 @@ with warnings.catch_warnings():
     import tensorflow as tf  # noqa: F401
 
 # for efficientVLN: we do image encoding and subgoal generation during inference
-from sim2sim_vlnce.Sim2Sim.subgoal_module.obs_transform import ResNetAllEncoderEfficient, SubgoalModule
+from sim2sim_vlnce.Sim2Sim.subgoal_module.obs_transform import ResNetAllEncoderEfficient, SubgoalModuleEfficient
 
 
 @baseline_registry.register_trainer(name="sim2sim_trainer")
@@ -850,7 +851,7 @@ class Vln2ceEvaluator(BaseTrainer):
         )
         logger.info("Loaded image encoder.")
 
-        self.subgoal_module = SubgoalModule(
+        self.subgoal_module = SubgoalModuleEfficient(
             max_candidates=5,
             unet_weights_file='data/sgm_models/sgm_sim2sim.pth',
             unet_channels=64,
@@ -1139,20 +1140,25 @@ class Vln2ceEvaluator(BaseTrainer):
         nav_stats = []
 
         # STEP LOOP
-        GFLOPS_tracker = {}
+        gflops_tracker = {}
         while envs.num_envs > 0 and len(stats_episodes) < num_eps:
             current_episodes = envs.current_episodes()
-            current_episodes_ids = [e.episode_id for e in current_episodes]
+            current_episodes_ids = [int(e.episode_id) for e in current_episodes]
 
             for ep_id in current_episodes_ids:
-                if ep_id not in GFLOPS_tracker:
-                    GFLOPS_tracker[ep_id] = 0
+                if ep_id not in gflops_tracker:
+                    gflops_tracker[ep_id] = {
+                        "image_encoder": 0,
+                        "subgoal_module": 0,
+                        "instruction_encoder": 0,
+                        "policy": 0,
+                    }
 
                     # eventually, we can also set up a fresh caching mechanism here
 
             # get image features and sgm predictions
-            batch = self.image_encoder(batch, GFLOPS_tracker, current_episodes_ids)
-            batch = self.subgoal_module(batch)
+            batch = self.image_encoder(batch, gflops_tracker, current_episodes_ids)
+            batch = self.subgoal_module(batch, gflops_tracker, current_episodes_ids)
 
             if (not_done_masks == 0).any().item():
                 # for new episodes, update instruction features and set h_t
@@ -1161,18 +1167,22 @@ class Vln2ceEvaluator(BaseTrainer):
                     (
                         h_t[mask_select],
                         instruction_features[mask_select],
-                    ) = self.policy.encode_instruction(
+                    ) = self.policy.encode_instruction_efficient(
                         batch["vln_instruction"][mask_select],
                         batch["vln_instruction_mask"][mask_select],
+                        torch.tensor(current_episodes_ids)[mask_select].tolist(),
+                        gflops_tracker,
                     )
 
             with torch.no_grad():
-                h_t, actions = self.policy.act(
+                h_t, actions = self.policy.act_efficient(
                     batch,
                     h_t,
                     instruction_features,
                     instruction_mask=batch["vln_instruction_mask"],
                     deterministic=not config.EVAL.SAMPLE,
+                    epsiode_ids=current_episodes_ids,
+                    gflops_tracker=gflops_tracker,
                 )
 
             outputs = envs.step(actions)
@@ -1283,11 +1293,24 @@ class Vln2ceEvaluator(BaseTrainer):
             
             # log GFLOPs used by encoder
             with open(os.path.join(config.RESULTS_DIR, "episode_gflops.json"), "w") as f:
-                json.dump(GFLOPS_tracker, f, indent=4)
+                json.dump(gflops_tracker, f, indent=4)
             with open(os.path.join(config.RESULTS_DIR, "total_gflops.txt"), "w") as f:
-                f.write(f"Total GFLOPs: {sum(GFLOPS_tracker.values())}\n")
-                f.write(f"Total episodes: {len(GFLOPS_tracker)}\n")
-                f.write(f"Average GFLOPs per episode: {sum(GFLOPS_tracker.values())/len(GFLOPS_tracker)}")
+                models = ['image_encoder', 'subgoal_module', 'instruction_encoder', 'policy']
+
+                total_gflops = 0.
+                total_gflops_per_model = {model: 0. for model in models}
+                for _, gflops_dict in gflops_tracker.items():
+                    for model in models:
+                        total_gflops_per_model[model] += gflops_dict[model]
+                        total_gflops += gflops_dict[model]
+
+                f.write(f"Total episodes: {len(gflops_tracker)}\n")
+                f.write(f"Total GFLOPs: {total_gflops}\n")
+
+                for model in models:
+                    f.write(f"Total GFLOPs for {model}: {total_gflops_per_model[model]}\n")
+
+                f.write(f"Average GFLOPs per episode: {total_gflops / len(gflops_tracker)}\n")
 
         logger.info(f"Episodes evaluated: {num_episodes}")
         for k, v in aggregated_stats.items():
