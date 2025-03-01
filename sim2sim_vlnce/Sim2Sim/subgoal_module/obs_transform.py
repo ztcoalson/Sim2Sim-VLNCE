@@ -12,6 +12,7 @@ from habitat_baselines.common.baseline_registry import BaselineRegistry
 from habitat_baselines.common.obs_transformers import ObservationTransformer
 from torch import Tensor, nn
 from torch.nn import functional as F
+from thop import profile
 
 from habitat_extensions.utils import vln_style_angle_features
 from sim2sim_vlnce.Sim2Sim.subgoal_module.nonmaximal_suppression import nms
@@ -232,9 +233,7 @@ class ResNetAllEncoder(ObservationTransformer):
             high_idx = min(num_frames, (i + 1) * self.max_batch_size)
 
             input_frames = frames_np[low_idx:high_idx].to(self.device)
-
-            with torch.no_grad():
-                encoded[low_idx:high_idx] = self.net(input_frames).data[:, :, 0, 0]
+            encoded[low_idx:high_idx] = self.net(input_frames).data[:, :, 0, 0]
 
         return encoded
 
@@ -246,6 +245,119 @@ class ResNetAllEncoder(ObservationTransformer):
         out_shape = (batch_size, num_frames, self.FEATURE_SIZE)
 
         frame_features = self.encode(observations["rgb"].reshape(in_shape))
+        observations[self.OBS_UUID] = frame_features.reshape(out_shape)
+
+        if self.remove_rgb:
+            del observations["rgb"]
+
+        return observations
+
+    @classmethod
+    def from_config(cls, config: Config):
+        cfg = config.RL.POLICY.OBS_TRANSFORMS.RESNET_CANDIDATE_ENCODER
+        gpu_id = config.TORCH_GPU_ID
+        if cfg.gpu_id >= 0:
+            gpu_id = cfg.gpu_id
+        return cls(
+            cfg.protoxt_file,
+            cfg.weights_file,
+            cfg.remove_rgb,
+            cfg.max_batch_size,
+            gpu_id,
+        )
+
+
+class ResNetAllEncoderEfficient(ObservationTransformer):
+    """Encodes all RGB frames into a 2048-dimensional vector using a
+    pretrained ResNet. Assumes the "rgb" observation is a stack of RGB images.
+    The model is in Caffe to match exactly the encoder used in R2R VLN.
+    """
+
+    OBS_UUID: str = "rgb_features"
+    FEATURE_SIZE: int = 2048
+
+    def __init__(
+        self,
+        remove_rgb: bool,
+        gpu_id: int,
+    ) -> None:
+        super(ResNetAllEncoderEfficient, self).__init__()
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda", gpu_id)
+        else:
+            self.device = torch.device("cpu")
+
+        self.remove_rgb = remove_rgb
+        self.net = ResNet152Places365('data/pytorch_models/resnet152-places365.npy').to(self.device)
+        self.net.eval()
+
+        self.bgr_mean = torch.tensor([103.1, 115.9, 123.2]).to(
+            device=self.device
+        )
+
+    def transform_observation_space(
+        self,
+        observation_space: Space,
+    ) -> Space:
+        spaces_dict: Dict[str, Space] = observation_space.spaces
+        num_frames = spaces_dict["rgb"].shape[0]
+        if self.remove_rgb:
+            del spaces_dict["rgb"]
+
+        spaces_dict[self.OBS_UUID] = spaces.Box(
+            low=np.finfo(np.float32).min,
+            high=np.finfo(np.float32).max,
+            shape=(num_frames, self.FEATURE_SIZE),
+            dtype=np.float32,
+        )
+        return spaces.Dict(spaces_dict)
+
+    def _transform_obs_batch(self, rgb):
+        """Prepares an RGB observation for input to the Caffe ResNet."""
+        x = rgb.to(dtype=torch.float32)
+        x = x[:, :, :, [2, 1, 0]]  # RGB to BGR color channels
+        x -= self.bgr_mean
+        x = x.permute(0, 3, 1, 2)
+        return x
+
+    def encode(self, frames: Tensor, GFLOPS_tracker: Dict, frame_episode_mapping: List[int]) -> Tensor:
+        """Runs a forward pass on the Caffe ResNet and extracts 2048-dim
+        features. Uses a maximum batch size to avoid OOM.
+
+        Args:
+            frames (Tensor): [num_frames, width, height, channels]
+
+        Returns:
+            frame_features (Tensor): [num_frames, 2048]
+        """
+        frames_np = self._transform_obs_batch(frames)
+        num_frames = frames_np.shape[0]
+
+        encoded = torch.zeros((num_frames, self.FEATURE_SIZE), dtype=torch.float32).to(self.device)
+
+        for i in range(num_frames):
+            input_frames = frames_np[i].unsqueeze(0).to(self.device)
+
+            outputs, flops, _ = profile(self.net, inputs=(input_frames,), verbose=False)
+            
+            GFLOPS_tracker[frame_episode_mapping[i]] += flops / 1e9
+            encoded[i] = outputs.data[0, :, 0, 0]
+
+        return encoded
+
+    @torch.no_grad()
+    def forward(self, observations: Observations, GFLOPS_tracker: Dict, episode_ids: List[int]) -> Observations:
+        num_eps, num_frames, h, w, channels = observations["rgb"].shape
+
+        in_shape = (num_eps * num_frames, h, w, channels)
+        out_shape = (num_eps, num_frames, self.FEATURE_SIZE)
+
+        # map each frame to an episode for GFLOPS tracking
+        frame_episode_mapping = []
+        for ep_id in episode_ids:
+            frame_episode_mapping.extend([ep_id] * num_frames)
+
+        frame_features = self.encode(observations["rgb"].reshape(in_shape), GFLOPS_tracker, frame_episode_mapping)
         observations[self.OBS_UUID] = frame_features.reshape(out_shape)
 
         if self.remove_rgb:

@@ -67,6 +67,11 @@ def run_exp(exp_config: str, run_type: str, opts=None) -> None:
 
     set_seed(config.TASK_CONFIG.SEED, is_eval=run_type == "eval")
 
+    if 'sgm-local_policy_efficient' in exp_config:
+        config.defrost()
+        config.TRAINER_NAME = "sim2sim_trainer_efficient"
+        config.freeze()
+
     trainer_init = baseline_registry.get_trainer(config.TRAINER_NAME)
     assert trainer_init is not None, f"{config.TRAINER_NAME} is not supported"
     trainer = trainer_init(config)
