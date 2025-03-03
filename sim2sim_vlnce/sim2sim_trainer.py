@@ -49,7 +49,7 @@ with warnings.catch_warnings():
     import tensorflow as tf  # noqa: F401
 
 # for efficientVLN: we do image encoding and subgoal generation during inference
-from sim2sim_vlnce.Sim2Sim.subgoal_module.obs_transform import ResNetAllEncoderEfficient, SubgoalModuleEfficient
+from sim2sim_vlnce.Sim2Sim.subgoal_module.obs_transform import ResNetAllEncoderEfficient, SubgoalModuleScanOnlyEfficient, SubgoalModuleEfficientTest
 
 
 @baseline_registry.register_trainer(name="sim2sim_trainer")
@@ -851,22 +851,37 @@ class Vln2ceEvaluator(BaseTrainer):
         )
         logger.info("Loaded image encoder.")
 
-        self.subgoal_module = SubgoalModuleEfficient(
+        self.subgoal_module = SubgoalModuleScanOnlyEfficient(
             max_candidates=5,
-            unet_weights_file='data/sgm_models/sgm_sim2sim.pth',
-            unet_channels=64,
+            scan_only_net_weights_file='data/sgm_models/saved_ScanOnlyNet_0.0100.pth',
+            scan_only_net_channels=64,
             nms_sigma=2.0,
             nms_thresh=0.003,
             angle_feature_size=128,
-            remove_rgb_feats=True,
+            remove_rgb=True,
             ablate_feats=False,
-            use_ground_truth=False,
             range_correction=0.5,
             heading_correction=0.5,
             range_bin_width=0.2,
             heading_bin_width=0.1308996938995747,
             device='cuda:0'
         )
+        # self.subgoal_module = SubgoalModuleEfficientTest(
+        #     max_candidates=5,
+        #     unet_weights_file='data/sgm_models/saved_ScanOnlyNet_0.0100.pth',
+        #     unet_channels=64,
+        #     nms_sigma=2.0,
+        #     nms_thresh=0.003,
+        #     angle_feature_size=128,
+        #     remove_rgb_feats=True,
+        #     ablate_feats=False,
+        #     use_ground_truth=False,
+        #     range_correction=0.5,
+        #     heading_correction=0.5,
+        #     range_bin_width=0.2,
+        #     heading_bin_width=0.1308996938995747,
+        #     device='cuda:0'
+        # )
         logger.info("Loaded Subgoal generation module.")
 
         logger.info("Finished setting up policy.")
@@ -1157,8 +1172,9 @@ class Vln2ceEvaluator(BaseTrainer):
                     # eventually, we can also set up a fresh caching mechanism here
 
             # get image features and sgm predictions
-            batch = self.image_encoder(batch, gflops_tracker, current_episodes_ids)
-            batch = self.subgoal_module(batch, gflops_tracker, current_episodes_ids)
+            # batch = self.image_encoder(batch, gflops_tracker, current_episodes_ids)
+            batch = self.subgoal_module(batch, self.image_encoder, gflops_tracker, current_episodes_ids)    # get SGM predictions then encode
+            # batch = self.subgoal_module(batch, gflops_tracker, current_episodes_ids)
 
             if (not_done_masks == 0).any().item():
                 # for new episodes, update instruction features and set h_t
