@@ -53,7 +53,6 @@ from sim2sim_vlnce.Sim2Sim.subgoal_module.obs_transform import (
     ResNetAllEncoderEfficient, 
     SubgoalModuleScanOnlyEfficient, 
     LSH,
-    SubgoalModuleEfficientTest
 )
 
 
