@@ -870,22 +870,6 @@ class Vln2ceEvaluator(BaseTrainer):
             heading_bin_width=0.1308996938995747,
             device='cuda:0'
         )
-        # self.subgoal_module = SubgoalModuleEfficientTest(
-        #     max_candidates=5,
-        #     unet_weights_file='data/sgm_models/saved_ScanOnlyNet_0.0100.pth',
-        #     unet_channels=64,
-        #     nms_sigma=2.0,
-        #     nms_thresh=0.003,
-        #     angle_feature_size=128,
-        #     remove_rgb_feats=True,
-        #     ablate_feats=False,
-        #     use_ground_truth=False,
-        #     range_correction=0.5,
-        #     heading_correction=0.5,
-        #     range_bin_width=0.2,
-        #     heading_bin_width=0.1308996938995747,
-        #     device='cuda:0'
-        # )
         logger.info("Loaded Subgoal generation module.")
 
         logger.info("Finished setting up policy.")
