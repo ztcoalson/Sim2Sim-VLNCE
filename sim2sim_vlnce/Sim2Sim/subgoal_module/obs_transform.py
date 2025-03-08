@@ -21,7 +21,7 @@ from sim2sim_vlnce.Sim2Sim.vis import subgoal_candidates_to_radial_map
 
 from .resnet152_places365 import ResNet152Places365
 from .scan_only_net import ScanOnlyNet
-
+from .lsh import LSH
 
 # @BaselineRegistry.register_obs_transformer()
 # class ResNetAllEncoder(ObservationTransformer):
@@ -1077,7 +1077,14 @@ class SubgoalModuleScanOnlyEfficient(SubgoalModuleABC):
         return obs_space
 
     @torch.no_grad()
-    def forward(self, observations: Observations, image_encoder: ResNetAllEncoderEfficient, gflops_tracker: Dict, episode_ids: List[int]) -> Observations:
+    def forward(
+        self, 
+        observations: Observations, 
+        image_encoder: ResNetAllEncoderEfficient, 
+        gflops_tracker: Dict, 
+        episode_ids: List[int],
+        active_lsh: Dict[int, LSH]
+    ) -> Observations:
         device = observations["radial_occupancy"].device
         batch_size = observations["radial_occupancy"].shape[0]
 
@@ -1111,7 +1118,7 @@ class SubgoalModuleScanOnlyEfficient(SubgoalModuleABC):
 
             rgb = observations["rgb"][i].reshape(3, 12, 480, 640, 3)
             candidate_features[i, :c] = self.encode_feats_from_pose(
-                rgb, rel_heading, elevation, self.angle_feature_size, image_encoder, gflops_tracker, episode_ids[i]
+                rgb, rel_heading, elevation, self.angle_feature_size, image_encoder, gflops_tracker, episode_ids[i], active_lsh
             )
             candidate_coordinates[i, :c, 0] = distance
             candidate_coordinates[i, :c, 1] = -rel_heading % (2 * np.pi)
@@ -1222,7 +1229,8 @@ class SubgoalModuleScanOnlyEfficient(SubgoalModuleABC):
         angle_feature_size: int, 
         image_encoder: ResNetAllEncoderEfficient, 
         gflops_tracker: Dict, 
-        episode_id: int
+        episode_id: int,
+        active_lsh: Dict[int, LSH]
     ) -> Tensor:
         """Generate features for candidates specified by their heading,
         relative heading, and elevation. Features include RGB (2048) and
@@ -1251,8 +1259,12 @@ class SubgoalModuleScanOnlyEfficient(SubgoalModuleABC):
             headingIncrement = np.pi * 2.0 / 12
             h = int(np.around(rel_heading_lst[i] / headingIncrement)) % 12
 
-            curr_feat = image_encoder.encode(rgb[e_idx, h].unsqueeze(0), gflops_tracker, [episode_id])
-            feats[i, : feature_size] = curr_feat[0].detach()
+            candidate_encoding = active_lsh[episode_id].get_similar_processed_embedding(rgb[e_idx, h])
+            if candidate_encoding is None:
+                candidate_encoding = image_encoder.encode(rgb[e_idx, h].unsqueeze(0), gflops_tracker, [episode_id])[0]
+                active_lsh[episode_id].add_processed_embedding(rgb[e_idx, h], candidate_encoding)
+            
+            feats[i, : feature_size] = candidate_encoding.detach()
 
         return feats
 

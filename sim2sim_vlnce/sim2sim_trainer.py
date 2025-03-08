@@ -49,7 +49,12 @@ with warnings.catch_warnings():
     import tensorflow as tf  # noqa: F401
 
 # for efficientVLN: we do image encoding and subgoal generation during inference
-from sim2sim_vlnce.Sim2Sim.subgoal_module.obs_transform import ResNetAllEncoderEfficient, SubgoalModuleScanOnlyEfficient, SubgoalModuleEfficientTest
+from sim2sim_vlnce.Sim2Sim.subgoal_module.obs_transform import (
+    ResNetAllEncoderEfficient, 
+    SubgoalModuleScanOnlyEfficient, 
+    LSH,
+    SubgoalModuleEfficientTest
+)
 
 
 @baseline_registry.register_trainer(name="sim2sim_trainer")
@@ -1156,10 +1161,12 @@ class Vln2ceEvaluator(BaseTrainer):
 
         # STEP LOOP
         gflops_tracker = {}
+        active_lsh = {}
         while envs.num_envs > 0 and len(stats_episodes) < num_eps:
             current_episodes = envs.current_episodes()
             current_episodes_ids = [int(e.episode_id) for e in current_episodes]
 
+            # init GFLOPs tracking and LSH for new episodes
             for ep_id in current_episodes_ids:
                 if ep_id not in gflops_tracker:
                     gflops_tracker[ep_id] = {
@@ -1168,12 +1175,24 @@ class Vln2ceEvaluator(BaseTrainer):
                         "instruction_encoder": 0,
                         "policy": 0,
                     }
-
-                    # eventually, we can also set up a fresh caching mechanism here
+                    active_lsh[ep_id] = LSH(10, 3 * 480 * 640, 0.96)
+            
+            # remove LSH for episodes that are done
+            active_ids = list(active_lsh.keys())
+            for ep_id in active_ids:
+                if ep_id not in current_episodes_ids:
+                    active_lsh[ep_id].reset_for_new_episode()
+                    del active_lsh[ep_id]
 
             # get image features and sgm predictions
             # batch = self.image_encoder(batch, gflops_tracker, current_episodes_ids)
-            batch = self.subgoal_module(batch, self.image_encoder, gflops_tracker, current_episodes_ids)    # get SGM predictions then encode
+            batch = self.subgoal_module(
+                batch, 
+                self.image_encoder, 
+                gflops_tracker, 
+                current_episodes_ids, 
+                active_lsh
+            )    # get SGM predictions then encode
             # batch = self.subgoal_module(batch, gflops_tracker, current_episodes_ids)
 
             if (not_done_masks == 0).any().item():
